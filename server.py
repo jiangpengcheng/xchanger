@@ -336,8 +336,16 @@ def parse_range(value: str | None, size: int) -> ByteRange | None:
 
 
 def make_handler(
-    store: Store, proxy: ReverseProxy | None = None
+    store: Store,
+    proxy: ReverseProxy | None = None,
+    static_proxy: ReverseProxy | None = None,
+    intercepted_apk: str | None = None,
+    logger: Callable[[dict[str, Any]], None] = _default_proxy_logger,
 ) -> type[BaseHTTPRequestHandler]:
+    intercepted_apk_path = store.apk_path(intercepted_apk) if intercepted_apk else None
+    if intercepted_apk and intercepted_apk_path is None:
+        raise ValueError(f"intercepted APK is not registered or missing: {intercepted_apk}")
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "XCAppStoreLocal/1.0"
 
@@ -366,8 +374,34 @@ def make_handler(
             parsed = urlparse(self.path)
             route = parsed.path.rstrip("/") or "/"
             query = parse_qs(parsed.query)
-
             is_read = self.command in {"GET", "HEAD"}
+
+            request_host = self.headers.get("Host", "").split(":", 1)[0].rstrip(".").lower()
+            if request_host == "gstore-static.xchanger.cn":
+                if is_read and route.lower().endswith(".apk") and intercepted_apk_path:
+                    logger(
+                        {
+                            "event": "apk_intercept",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "clientIp": self.client_address[0],
+                            "host": request_host,
+                            "method": self.command,
+                            "path": self.path,
+                            "range": self.headers.get("Range", ""),
+                            "servedApk": intercepted_apk_path.name,
+                        }
+                    )
+                    self._serve_file(intercepted_apk_path, send_body)
+                    return
+                if static_proxy is not None:
+                    static_proxy.forward(self, send_body=send_body)
+                    return
+                self._json(
+                    {"error": {"code": "404", "message": "Static route not found"}},
+                    status=HTTPStatus.NOT_FOUND,
+                    send_body=send_body,
+                )
+                return
 
             if is_read and route == "/healthz":
                 self._json({"status": "ok"}, send_body=send_body)
@@ -458,6 +492,9 @@ def make_handler(
                 )
                 return
 
+            self._serve_file(path, send_body)
+
+        def _serve_file(self, path: Path, send_body: bool) -> None:
             size = path.stat().st_size
             try:
                 requested = parse_range(self.headers.get("Range"), size)
@@ -509,6 +546,14 @@ def main() -> None:
         help="Proxy non-store routes to this upstream base URL",
     )
     parser.add_argument(
+        "--static-upstream-base-url",
+        help="Proxy non-APK gstore-static.xchanger.cn requests to this URL",
+    )
+    parser.add_argument(
+        "--intercept-apk",
+        help="Registered APK filename returned for every gstore-static .apk request",
+    )
+    parser.add_argument(
         "--root",
         type=Path,
         default=Path(__file__).resolve().parent,
@@ -517,11 +562,26 @@ def main() -> None:
     args = parser.parse_args()
     store = Store(args.root, args.public_base_url)
     proxy = ReverseProxy(args.upstream_base_url) if args.upstream_base_url else None
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, proxy))
+    static_proxy = (
+        ReverseProxy(args.static_upstream_base_url)
+        if args.static_upstream_base_url
+        else None
+    )
+    handler = make_handler(
+        store,
+        proxy,
+        static_proxy,
+        intercepted_apk=args.intercept_apk,
+    )
+    server = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"Serving XCAppStore API on http://{args.host}:{args.port}")
     print(f"URLs returned to the car use {args.public_base_url}")
     if proxy:
         print(f"Non-store routes proxy to {proxy.upstream_base_url}")
+    if static_proxy:
+        print(f"Non-APK static routes proxy to {static_proxy.upstream_base_url}")
+    if args.intercept_apk:
+        print(f"All gstore-static .apk requests serve {args.intercept_apk}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -117,7 +117,11 @@ docker logs xchanger-server
 日志由 Docker 限制为 10 MiB × 3 个文件。不要上传或提交这些日志；诊断完成后
 应删除日志并恢复脱敏策略。
 
-`deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn`，其余记录转发至公共 DNS。当前配置会接受任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS `acl` 或用防火墙限制来源。
+`deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn` 和
+`gstore-static.xchanger.cn`，其余记录转发至公共 DNS。后一个域名的所有 `.apk`
+下载当前统一返回 ES 文件浏览器，其他静态资源仍转发真实服务器。当前配置会接受
+任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS
+`acl` 或用防火墙限制来源。
 
 ```bash
 docker run -d --name xchanger-dns --restart unless-stopped \
@@ -127,4 +131,11 @@ docker run -d --name xchanger-dns --restart unless-stopped \
   -p '<服务器内网 IP>:53:53/tcp' \
   -v "$PWD/deploy/Corefile:/Corefile:ro" \
   coredns/coredns:1.11.3 -conf /Corefile
+```
+
+应用服务增加以下启动参数以启用 APK 替换：
+
+```text
+--static-upstream-base-url http://gstore-static.xchanger.cn
+--intercept-apk com.estrongs.android.pop-10006.apk
 ```

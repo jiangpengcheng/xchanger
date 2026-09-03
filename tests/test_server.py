@@ -62,11 +62,23 @@ class ServerTest(unittest.TestCase):
         )
         self.upstream_thread.start()
         self.proxy_records: list[dict] = []
+        self.intercept_records: list[dict] = []
         proxy = ReverseProxy(
             f"http://127.0.0.1:{self.upstream.server_port}",
             logger=self.proxy_records.append,
         )
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store, proxy))
+        static_proxy = ReverseProxy(
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            logger=self.proxy_records.append,
+        )
+        handler = make_handler(
+            store,
+            proxy,
+            static_proxy,
+            intercepted_apk="demo.apk",
+            logger=self.intercept_records.append,
+        )
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -107,6 +119,20 @@ class ServerTest(unittest.TestCase):
         with urllib.request.urlopen(request) as response:
             self.assertEqual(response.status, 206)
             self.assertEqual(response.read(), b"2345")
+
+    def test_all_gstore_apk_paths_serve_intercepted_apk(self) -> None:
+        request = urllib.request.Request(
+            self.base + "/catalog/original-app.apk?download=1",
+            headers={"Host": "gstore-static.xchanger.cn", "Range": "bytes=4-7"},
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status, 206)
+            self.assertEqual(response.read(), b"4567")
+
+        self.assertEqual(len(self.intercept_records), 1)
+        record = self.intercept_records[0]
+        self.assertEqual(record["path"], "/catalog/original-app.apk?download=1")
+        self.assertEqual(record["servedApk"], "demo.apk")
 
     def test_range_parser(self) -> None:
         self.assertEqual(parse_range("bytes=-3", 10).start, 7)
