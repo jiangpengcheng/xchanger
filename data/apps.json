@@ -11,6 +11,18 @@
       "developer": "Local test",
       "updateTime": "2026-09-03",
       "changes": ""
+    },
+    {
+      "productId": "900002",
+      "name": "ES文件浏览器",
+      "packageName": "com.estrongs.android.pop",
+      "versionCode": 10006,
+      "versionName": "4.1.8.4.2",
+      "apk": "com.estrongs.android.pop-10006.apk",
+      "description": "ES 文件浏览器 4.1.8 测试应用",
+      "developer": "Local test",
+      "updateTime": "2026-09-03",
+      "changes": ""
     }
   ]
 }
