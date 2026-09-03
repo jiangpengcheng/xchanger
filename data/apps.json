@@ -1,3 +1,16 @@
 {
-  "apps": []
+  "apps": [
+    {
+      "productId": "900001",
+      "name": "CarPlay",
+      "packageName": "com.aufn.carplay",
+      "versionCode": 63,
+      "versionName": "1.9.1",
+      "apk": "com.aufn.carplay-63.apk",
+      "description": "CarPlay test application",
+      "developer": "Local test",
+      "updateTime": "2026-09-03",
+      "changes": ""
+    }
+  ]
 }

@@ -85,3 +85,29 @@ curl http://api.xchanger.cn/api/v1/product
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## 7. Docker 部署
+
+应用服务镜像使用仓库根目录的 `Dockerfile` 构建。运行时挂载目录和 APK，避免把 APK 烘焙进镜像：
+
+```bash
+docker build -t xchanger-server:local .
+docker run -d --name xchanger-server --restart unless-stopped \
+  -p 80:8080 \
+  -v "$PWD/data:/app/data:ro" \
+  -v "$PWD/apks:/app/apks:ro" \
+  xchanger-server:local
+```
+
+`deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn`，其余记录转发至公共 DNS。必须通过 `DNS_ALLOWED_CIDR` 限制可使用递归解析的客户端来源，避免成为公网开放解析器。
+
+```bash
+docker run -d --name xchanger-dns --restart unless-stopped \
+  --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
+  --security-opt no-new-privileges \
+  -e DNS_ALLOWED_CIDR='<测试网络公网出口 IP>/32' \
+  -p '<服务器内网 IP>:53:53/udp' \
+  -p '<服务器内网 IP>:53:53/tcp' \
+  -v "$PWD/deploy/Corefile:/Corefile:ro" \
+  coredns/coredns:1.11.3 -conf /Corefile
+```
