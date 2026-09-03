@@ -120,7 +120,8 @@ docker logs xchanger-server
 `deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn` 和
 `gstore-static.xchanger.cn`、其 OSS CNAME 和 `gstore-fee` OSS 域名，其他记录
 转发至公共 DNS。这些域名的 `.apk` 下载以及 Co:Club 的无扩展名下载路径当前
-统一返回 ES 文件浏览器，其他静态资源仍转发真实服务器。当前配置会接受
+统一返回 `--intercept-apk` 指定的已注册 APK，其他静态资源仍转发真实服务器。
+服务器当前使用原版“伴听根证书”APK进行系统验签测试。当前配置会接受
 任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS
 `acl` 或用防火墙限制来源。
 
@@ -139,5 +140,5 @@ docker run -d --name xchanger-dns --restart unless-stopped \
 ```text
 --static-upstream-base-url http://gstore-static.xchanger.cn
 --fee-upstream-base-url http://gstore-fee.oss-cn-hangzhou.aliyuncs.com
---intercept-apk com.estrongs.android.pop-10006.apk
+--intercept-apk com.ecarx.certinstall-1.apk
 ```

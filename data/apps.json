@@ -23,6 +23,18 @@
       "developer": "Local test",
       "updateTime": "2026-09-03",
       "changes": ""
+    },
+    {
+      "productId": "900003",
+      "name": "伴听根证书",
+      "packageName": "com.ecarx.certinstall",
+      "versionCode": 1,
+      "versionName": "1.0",
+      "apk": "com.ecarx.certinstall-1.apk",
+      "description": "伴听根证书原版 APK 测试应用",
+      "developer": "亿咖通",
+      "updateTime": "2026-09-03",
+      "changes": ""
     }
   ]
 }
