@@ -121,15 +121,21 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(response.read(), b"2345")
 
     def test_all_gstore_apk_paths_serve_intercepted_apk(self) -> None:
-        request = urllib.request.Request(
-            self.base + "/catalog/original-app.apk?download=1",
-            headers={"Host": "gstore-static.xchanger.cn", "Range": "bytes=4-7"},
+        hosts = (
+            "gstore-static.xchanger.cn",
+            "gstore-static.oss-cn-hangzhou.aliyuncs.com",
         )
-        with urllib.request.urlopen(request) as response:
-            self.assertEqual(response.status, 206)
-            self.assertEqual(response.read(), b"4567")
+        for host in hosts:
+            with self.subTest(host=host):
+                request = urllib.request.Request(
+                    self.base + "/catalog/original-app.apk?download=1",
+                    headers={"Host": host, "Range": "bytes=4-7"},
+                )
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.read(), b"4567")
 
-        self.assertEqual(len(self.intercept_records), 1)
+        self.assertEqual(len(self.intercept_records), 2)
         record = self.intercept_records[0]
         self.assertEqual(record["path"], "/catalog/original-app.apk?download=1")
         self.assertEqual(record["servedApk"], "demo.apk")

@@ -377,7 +377,10 @@ def make_handler(
             is_read = self.command in {"GET", "HEAD"}
 
             request_host = self.headers.get("Host", "").split(":", 1)[0].rstrip(".").lower()
-            if request_host == "gstore-static.xchanger.cn":
+            if request_host in {
+                "gstore-static.xchanger.cn",
+                "gstore-static.oss-cn-hangzhou.aliyuncs.com",
+            }:
                 if is_read and route.lower().endswith(".apk") and intercepted_apk_path:
                     logger(
                         {

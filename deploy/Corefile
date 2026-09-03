@@ -1,9 +1,10 @@
-api.xchanger.cn gstore-static.xchanger.cn:53 {
+api.xchanger.cn:53 gstore-static.xchanger.cn:53 gstore-static.oss-cn-hangzhou.aliyuncs.com:53 {
     errors
     log
     hosts {
         170.9.62.133 api.xchanger.cn
         170.9.62.133 gstore-static.xchanger.cn
+        170.9.62.133 gstore-static.oss-cn-hangzhou.aliyuncs.com
         ttl 60
         no_reverse
     }

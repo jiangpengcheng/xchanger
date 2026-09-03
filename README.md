@@ -118,8 +118,8 @@ docker logs xchanger-server
 应删除日志并恢复脱敏策略。
 
 `deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn` 和
-`gstore-static.xchanger.cn`，其余记录转发至公共 DNS。后一个域名的所有 `.apk`
-下载当前统一返回 ES 文件浏览器，其他静态资源仍转发真实服务器。当前配置会接受
+`gstore-static.xchanger.cn` 及其 OSS CNAME，其他记录转发至公共 DNS。后两个
+域名的所有 `.apk` 下载当前统一返回 ES 文件浏览器，其他静态资源仍转发真实服务器。当前配置会接受
 任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS
 `acl` 或用防火墙限制来源。
 
