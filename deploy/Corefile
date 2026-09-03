@@ -1,10 +1,6 @@
 api.xchanger.cn:53 {
     errors
-    acl {
-        allow net {$DNS_ALLOWED_CIDR}
-        allow net 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12
-        block
-    }
+    log
     hosts {
         170.9.62.133 api.xchanger.cn
         ttl 60
@@ -14,11 +10,7 @@ api.xchanger.cn:53 {
 
 .:53 {
     errors
-    acl {
-        allow net {$DNS_ALLOWED_CIDR}
-        allow net 127.0.0.0/8 10.0.0.0/8 172.16.0.0/12
-        block
-    }
+    log
     cache 60
     forward . 1.1.1.1 8.8.8.8 {
         policy sequential

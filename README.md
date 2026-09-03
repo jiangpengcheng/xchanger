@@ -99,13 +99,12 @@ docker run -d --name xchanger-server --restart unless-stopped \
   xchanger-server:local
 ```
 
-`deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn`，其余记录转发至公共 DNS。必须通过 `DNS_ALLOWED_CIDR` 限制可使用递归解析的客户端来源，避免成为公网开放解析器。
+`deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn`，其余记录转发至公共 DNS。当前配置会接受任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS `acl` 或用防火墙限制来源。
 
 ```bash
 docker run -d --name xchanger-dns --restart unless-stopped \
   --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
   --security-opt no-new-privileges \
-  -e DNS_ALLOWED_CIDR='<测试网络公网出口 IP>/32' \
   -p '<服务器内网 IP>:53:53/udp' \
   -p '<服务器内网 IP>:53:53/tcp' \
   -v "$PWD/deploy/Corefile:/Corefile:ro" \
