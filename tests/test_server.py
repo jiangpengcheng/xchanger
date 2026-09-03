@@ -6,12 +6,28 @@ import tempfile
 import threading
 import unittest
 import urllib.request
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from server import Store, make_handler, parse_range  # noqa: E402
+from server import ReverseProxy, Store, make_handler, parse_range  # noqa: E402
+
+
+class UpstreamHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.received.append((self.command, self.path, body))  # type: ignore[attr-defined]
+        response = b'{"accepted":true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        pass
 
 
 class ServerTest(unittest.TestCase):
@@ -39,7 +55,18 @@ class ServerTest(unittest.TestCase):
             encoding="utf-8",
         )
         store = Store(root, "http://api.xchanger.cn")
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store))
+        self.upstream = ThreadingHTTPServer(("127.0.0.1", 0), UpstreamHandler)
+        self.upstream.received = []  # type: ignore[attr-defined]
+        self.upstream_thread = threading.Thread(
+            target=self.upstream.serve_forever, daemon=True
+        )
+        self.upstream_thread.start()
+        self.proxy_records: list[dict] = []
+        proxy = ReverseProxy(
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            logger=self.proxy_records.append,
+        )
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(store, proxy))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -48,6 +75,9 @@ class ServerTest(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
+        self.upstream.shutdown()
+        self.upstream.server_close()
+        self.upstream_thread.join(timeout=2)
         self.temp.cleanup()
 
     def get_json(self, path: str) -> dict:
@@ -81,6 +111,26 @@ class ServerTest(unittest.TestCase):
     def test_range_parser(self) -> None:
         self.assertEqual(parse_range("bytes=-3", 10).start, 7)
         self.assertEqual(parse_range("bytes=4-", 10).end, 9)
+
+    def test_non_store_request_is_proxied_and_bodies_are_logged(self) -> None:
+        body = b'{"currentVersion":"1.0"}'
+        request = urllib.request.Request(
+            self.base + "/fota/v2/availbleVersion",
+            data=body,
+            headers={"Content-Type": "application/json", "X-Test-Token": "visible"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.load(response), {"accepted": True})
+
+        received = self.upstream.received  # type: ignore[attr-defined]
+        self.assertEqual(received, [("POST", "/fota/v2/availbleVersion", body)])
+        self.assertEqual(len(self.proxy_records), 1)
+        record = self.proxy_records[0]
+        self.assertEqual(record["requestBody"], body.decode())
+        self.assertEqual(record["responseBody"], '{"accepted":true}')
+        self.assertEqual(record["requestHeaders"]["X-Test-Token"], "visible")
 
 
 if __name__ == "__main__":

@@ -4,21 +4,199 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import http.client
 import json
 import mimetypes
 import re
+import ssl
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, quote, unquote, urlparse
+
+
+HOP_BY_HOP_HEADERS = {
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+MAX_PROXY_REQUEST_BODY = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
 class ByteRange:
     start: int
     end: int
+
+
+def _body_for_log(body: bytes) -> tuple[str, str]:
+    try:
+        return "utf-8", body.decode("utf-8")
+    except UnicodeDecodeError:
+        return "base64", base64.b64encode(body).decode("ascii")
+
+
+def _default_proxy_logger(record: dict[str, Any]) -> None:
+    print(json.dumps(record, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+class ReverseProxy:
+    """Small, explicit reverse proxy for non-store API routes."""
+
+    def __init__(
+        self,
+        upstream_base_url: str,
+        *,
+        timeout: float = 20,
+        logger: Callable[[dict[str, Any]], None] = _default_proxy_logger,
+    ):
+        parsed = urlparse(upstream_base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("upstream base URL must use http or https")
+        self.scheme = parsed.scheme
+        self.hostname = parsed.hostname
+        self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        self.host_header = parsed.netloc
+        self.base_path = parsed.path.rstrip("/")
+        self.upstream_base_url = upstream_base_url.rstrip("/")
+        self.timeout = timeout
+        self.logger = logger
+
+    def forward(self, handler: BaseHTTPRequestHandler, *, send_body: bool) -> None:
+        request_body = b""
+        request_encoding = "utf-8"
+        request_body_log = ""
+        connection: http.client.HTTPConnection | None = None
+        try:
+            transfer_encoding = handler.headers.get("Transfer-Encoding", "").lower()
+            if transfer_encoding and transfer_encoding != "identity":
+                self._error(handler, HTTPStatus.NOT_IMPLEMENTED, "Chunked requests are not supported")
+                return
+
+            raw_length = handler.headers.get("Content-Length", "0")
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                self._error(handler, HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+                return
+            if content_length < 0:
+                self._error(handler, HTTPStatus.BAD_REQUEST, "Invalid Content-Length")
+                return
+            if content_length > MAX_PROXY_REQUEST_BODY:
+                self._error(handler, HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large")
+                return
+            if content_length:
+                request_body = handler.rfile.read(content_length)
+            request_encoding, request_body_log = _body_for_log(request_body)
+
+            request_headers = {
+                name: value
+                for name, value in handler.headers.items()
+                if name.lower() not in HOP_BY_HOP_HEADERS
+                and name.lower() not in {"host", "content-length", "accept-encoding"}
+            }
+            request_headers["Host"] = self.host_header
+            request_headers["Accept-Encoding"] = "identity"
+            if request_body:
+                request_headers["Content-Length"] = str(len(request_body))
+
+            upstream_path = f"{self.base_path}{handler.path}"
+            connection_class = (
+                http.client.HTTPSConnection
+                if self.scheme == "https"
+                else http.client.HTTPConnection
+            )
+            connection_args: dict[str, Any] = {"timeout": self.timeout}
+            if self.scheme == "https":
+                connection_args["context"] = ssl.create_default_context()
+            connection = connection_class(self.hostname, self.port, **connection_args)
+            connection.request(
+                handler.command,
+                upstream_path,
+                body=request_body or None,
+                headers=request_headers,
+            )
+            upstream_response = connection.getresponse()
+            response_body = upstream_response.read()
+            response_encoding, response_body_log = _body_for_log(response_body)
+            response_headers = [
+                (name, value)
+                for name, value in upstream_response.getheaders()
+                if name.lower() not in HOP_BY_HOP_HEADERS
+                and name.lower() != "content-length"
+            ]
+
+            self.logger(
+                {
+                    "event": "upstream_proxy",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "clientIp": handler.client_address[0],
+                    "upstream": self.upstream_base_url,
+                    "method": handler.command,
+                    "path": handler.path,
+                    "requestHeaders": dict(handler.headers.items()),
+                    "requestBodyEncoding": request_encoding,
+                    "requestBody": request_body_log,
+                    "responseStatus": upstream_response.status,
+                    "responseHeaders": dict(upstream_response.getheaders()),
+                    "responseBodyEncoding": response_encoding,
+                    "responseBody": response_body_log,
+                }
+            )
+
+            handler.send_response(upstream_response.status, upstream_response.reason)
+            for name, value in response_headers:
+                handler.send_header(name, value)
+            handler.send_header("Content-Length", str(len(response_body)))
+            handler.send_header("Connection", "close")
+            handler.end_headers()
+            if send_body:
+                handler.wfile.write(response_body)
+        except Exception as exc:
+            self.logger(
+                {
+                    "event": "upstream_proxy_error",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "clientIp": handler.client_address[0],
+                    "upstream": self.upstream_base_url,
+                    "method": handler.command,
+                    "path": handler.path,
+                    "requestHeaders": dict(handler.headers.items()),
+                    "requestBodyEncoding": request_encoding,
+                    "requestBody": request_body_log,
+                    "errorType": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+            self._error(handler, HTTPStatus.BAD_GATEWAY, "Upstream request failed")
+        finally:
+            if connection is not None:
+                connection.close()
+
+    @staticmethod
+    def _error(
+        handler: BaseHTTPRequestHandler, status: HTTPStatus, message: str
+    ) -> None:
+        body = json.dumps(
+            {"error": {"code": str(status.value), "message": message}},
+            separators=(",", ":"),
+        ).encode()
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        if handler.command != "HEAD":
+            handler.wfile.write(body)
 
 
 class Store:
@@ -157,7 +335,9 @@ def parse_range(value: str | None, size: int) -> ByteRange | None:
     return ByteRange(start, min(end, size - 1))
 
 
-def make_handler(store: Store) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    store: Store, proxy: ReverseProxy | None = None
+) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         server_version = "XCAppStoreLocal/1.0"
 
@@ -167,15 +347,32 @@ def make_handler(store: Store) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             self._dispatch(send_body=True)
 
+        def do_POST(self) -> None:  # noqa: N802
+            self._dispatch(send_body=True)
+
+        def do_PUT(self) -> None:  # noqa: N802
+            self._dispatch(send_body=True)
+
+        def do_PATCH(self) -> None:  # noqa: N802
+            self._dispatch(send_body=True)
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._dispatch(send_body=True)
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self._dispatch(send_body=True)
+
         def _dispatch(self, send_body: bool) -> None:
             parsed = urlparse(self.path)
             route = parsed.path.rstrip("/") or "/"
             query = parse_qs(parsed.query)
 
-            if route == "/healthz":
+            is_read = self.command in {"GET", "HEAD"}
+
+            if is_read and route == "/healthz":
                 self._json({"status": "ok"}, send_body=send_body)
                 return
-            if route == "/api/v1/product/catalog":
+            if is_read and route == "/api/v1/product/catalog":
                 self._json(
                     {
                         "products": [
@@ -189,29 +386,29 @@ def make_handler(store: Store) -> type[BaseHTTPRequestHandler]:
                     send_body=send_body,
                 )
                 return
-            if route == "/api/v1/product/special":
+            if is_read and route == "/api/v1/product/special":
                 self._json(
                     {"specials": [{"alias": "local", "name": "本地应用"}]},
                     send_body=send_body,
                 )
                 return
-            if route == "/api/v1/product/special/local":
+            if is_read and route == "/api/v1/product/special/local":
                 self._json(store.products(), send_body=send_body)
                 return
-            if route == "/api/v1/banner/index":
+            if is_read and route == "/api/v1/banner/index":
                 self._json({"banners": []}, send_body=send_body)
                 return
-            if route == "/api/v1/app/version":
+            if is_read and route == "/api/v1/app/version":
                 self._json(store.versions(), send_body=send_body)
                 return
-            if route == "/api/v1/product/history":
+            if is_read and route == "/api/v1/product/history":
                 self._json({"histories": []}, send_body=send_body)
                 return
-            if route == "/api/v1/product":
+            if is_read and route == "/api/v1/product":
                 search = query.get("search", [""])[0]
                 self._json(store.products(search), send_body=send_body)
                 return
-            if route.startswith("/api/v1/product/"):
+            if is_read and route.startswith("/api/v1/product/"):
                 product_id = route.rsplit("/", 1)[-1]
                 app = store.find(product_id)
                 if app:
@@ -222,8 +419,11 @@ def make_handler(store: Store) -> type[BaseHTTPRequestHandler]:
                         send_body=send_body,
                     )
                 return
-            if route.startswith("/files/"):
+            if is_read and route.startswith("/files/"):
                 self._file(route.removeprefix("/files/"), send_body)
+                return
+            if proxy is not None:
+                proxy.forward(self, send_body=send_body)
                 return
             self._json(
                 {"error": {"code": "404", "message": "Route not found"}},
@@ -305,6 +505,10 @@ def main() -> None:
         help="Base URL inserted into APK and image responses",
     )
     parser.add_argument(
+        "--upstream-base-url",
+        help="Proxy non-store routes to this upstream base URL",
+    )
+    parser.add_argument(
         "--root",
         type=Path,
         default=Path(__file__).resolve().parent,
@@ -312,9 +516,12 @@ def main() -> None:
     )
     args = parser.parse_args()
     store = Store(args.root, args.public_base_url)
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(store))
+    proxy = ReverseProxy(args.upstream_base_url) if args.upstream_base_url else None
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(store, proxy))
     print(f"Serving XCAppStore API on http://{args.host}:{args.port}")
     print(f"URLs returned to the car use {args.public_base_url}")
+    if proxy:
+        print(f"Non-store routes proxy to {proxy.upstream_base_url}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

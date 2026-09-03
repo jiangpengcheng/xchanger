@@ -40,8 +40,13 @@ curl http://127.0.0.1:8080/api/v1/product
 
 ```bash
 python3 server.py --host 0.0.0.0 --port 8080 \
-  --public-base-url http://api.xchanger.cn
+  --public-base-url http://api.xchanger.cn \
+  --upstream-base-url https://api.xchanger.cn
 ```
+
+服务只在本地处理应用商店目录、详情、版本查询和 APK 下载接口。其他路径和
+HTTP 方法会原样转发到真实的 HTTPS 上游，避免 DNS 覆盖影响车辆、鉴权和
+FOTA 等共用接口。
 
 本机已有 Docker 和 `nginx:1.27.4-alpine` 镜像，可用非特权 Python 进程配合容器占用 80 端口：
 
@@ -93,11 +98,24 @@ python3 -m unittest discover -s tests -v
 ```bash
 docker build -t xchanger-server:local .
 docker run -d --name xchanger-server --restart unless-stopped \
+  --read-only \
+  --log-opt max-size=10m --log-opt max-file=3 \
   -p 80:8080 \
   -v "$PWD/data:/app/data:ro" \
   -v "$PWD/apks:/app/apks:ro" \
   xchanger-server:local
 ```
+
+转发日志以单行 JSON 写入容器标准输出，包含完整请求路径、请求头、请求体、
+上游状态、响应头和响应体；非 UTF-8 内容使用 Base64。当前诊断配置不脱敏，
+因此 VIN、访问令牌等敏感信息也会进入日志：
+
+```bash
+docker logs xchanger-server
+```
+
+日志由 Docker 限制为 10 MiB × 3 个文件。不要上传或提交这些日志；诊断完成后
+应删除日志并恢复脱敏策略。
 
 `deploy/Corefile` 用于 CoreDNS：它覆盖 `api.xchanger.cn`，其余记录转发至公共 DNS。当前配置会接受任意公网来源的递归查询，只适合临时识别车机出口 IP；测试结束后应加入 CoreDNS `acl` 或用防火墙限制来源。
 
