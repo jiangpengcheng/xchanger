@@ -15,6 +15,14 @@ from server import ReverseProxy, Store, make_handler, parse_range  # noqa: E402
 
 
 class UpstreamHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        response = b"static-image"
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(response)))
+        self.end_headers()
+        self.wfile.write(response)
+
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -70,6 +78,7 @@ class ServerTest(unittest.TestCase):
         static_proxy = ReverseProxy(
             f"http://127.0.0.1:{self.upstream.server_port}",
             logger=self.proxy_records.append,
+            log_bodies=False,
         )
         handler = make_handler(
             store,
@@ -143,6 +152,18 @@ class ServerTest(unittest.TestCase):
     def test_range_parser(self) -> None:
         self.assertEqual(parse_range("bytes=-3", 10).start, 7)
         self.assertEqual(parse_range("bytes=4-", 10).end, 9)
+
+    def test_static_proxy_omits_binary_body_from_logs(self) -> None:
+        request = urllib.request.Request(
+            self.base + "/catalog/icon.png",
+            headers={"Host": "gstore-static.xchanger.cn"},
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.read(), b"static-image")
+
+        record = self.proxy_records[0]
+        self.assertEqual(record["responseBodyBytes"], len(b"static-image"))
+        self.assertNotIn("responseBody", record)
 
     def test_non_store_request_is_proxied_and_bodies_are_logged(self) -> None:
         body = b'{"currentVersion":"1.0"}'

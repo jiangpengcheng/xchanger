@@ -58,6 +58,7 @@ class ReverseProxy:
         *,
         timeout: float = 20,
         logger: Callable[[dict[str, Any]], None] = _default_proxy_logger,
+        log_bodies: bool = True,
     ):
         parsed = urlparse(upstream_base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -70,6 +71,7 @@ class ReverseProxy:
         self.upstream_base_url = upstream_base_url.rstrip("/")
         self.timeout = timeout
         self.logger = logger
+        self.log_bodies = log_bodies
 
     def forward(self, handler: BaseHTTPRequestHandler, *, send_body: bool) -> None:
         request_body = b""
@@ -96,7 +98,8 @@ class ReverseProxy:
                 return
             if content_length:
                 request_body = handler.rfile.read(content_length)
-            request_encoding, request_body_log = _body_for_log(request_body)
+            if self.log_bodies:
+                request_encoding, request_body_log = _body_for_log(request_body)
 
             request_headers = {
                 name: value
@@ -127,7 +130,10 @@ class ReverseProxy:
             )
             upstream_response = connection.getresponse()
             response_body = upstream_response.read()
-            response_encoding, response_body_log = _body_for_log(response_body)
+            response_encoding = "omitted"
+            response_body_log = ""
+            if self.log_bodies:
+                response_encoding, response_body_log = _body_for_log(response_body)
             response_headers = [
                 (name, value)
                 for name, value in upstream_response.getheaders()
@@ -135,23 +141,25 @@ class ReverseProxy:
                 and name.lower() != "content-length"
             ]
 
-            self.logger(
-                {
-                    "event": "upstream_proxy",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "clientIp": handler.client_address[0],
-                    "upstream": self.upstream_base_url,
-                    "method": handler.command,
-                    "path": handler.path,
-                    "requestHeaders": dict(handler.headers.items()),
-                    "requestBodyEncoding": request_encoding,
-                    "requestBody": request_body_log,
-                    "responseStatus": upstream_response.status,
-                    "responseHeaders": dict(upstream_response.getheaders()),
-                    "responseBodyEncoding": response_encoding,
-                    "responseBody": response_body_log,
-                }
-            )
+            log_record = {
+                "event": "upstream_proxy",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "clientIp": handler.client_address[0],
+                "upstream": self.upstream_base_url,
+                "method": handler.command,
+                "path": handler.path,
+                "requestHeaders": dict(handler.headers.items()),
+                "requestBodyEncoding": request_encoding,
+                "responseStatus": upstream_response.status,
+                "responseHeaders": dict(upstream_response.getheaders()),
+                "responseBodyEncoding": response_encoding,
+                "requestBodyBytes": len(request_body),
+                "responseBodyBytes": len(response_body),
+            }
+            if self.log_bodies:
+                log_record["requestBody"] = request_body_log
+                log_record["responseBody"] = response_body_log
+            self.logger(log_record)
 
             handler.send_response(upstream_response.status, upstream_response.reason)
             for name, value in response_headers:
@@ -566,7 +574,7 @@ def main() -> None:
     store = Store(args.root, args.public_base_url)
     proxy = ReverseProxy(args.upstream_base_url) if args.upstream_base_url else None
     static_proxy = (
-        ReverseProxy(args.static_upstream_base_url)
+        ReverseProxy(args.static_upstream_base_url, log_bodies=False)
         if args.static_upstream_base_url
         else None
     )
