@@ -80,10 +80,16 @@ class ServerTest(unittest.TestCase):
             logger=self.proxy_records.append,
             log_bodies=False,
         )
+        fee_proxy = ReverseProxy(
+            f"http://127.0.0.1:{self.upstream.server_port}",
+            logger=self.proxy_records.append,
+            log_bodies=False,
+        )
         handler = make_handler(
             store,
             proxy,
             static_proxy,
+            fee_proxy,
             intercepted_apk="demo.apk",
             logger=self.intercept_records.append,
         )
@@ -133,6 +139,7 @@ class ServerTest(unittest.TestCase):
         hosts = (
             "gstore-static.xchanger.cn",
             "gstore-static.oss-cn-hangzhou.aliyuncs.com",
+            "gstore-fee.oss-cn-hangzhou.aliyuncs.com",
         )
         for host in hosts:
             with self.subTest(host=host):
@@ -144,22 +151,38 @@ class ServerTest(unittest.TestCase):
                     self.assertEqual(response.status, 206)
                     self.assertEqual(response.read(), b"4567")
 
-        self.assertEqual(len(self.intercept_records), 2)
+        self.assertEqual(len(self.intercept_records), 3)
         record = self.intercept_records[0]
         self.assertEqual(record["path"], "/catalog/original-app.apk?download=1")
         self.assertEqual(record["servedApk"], "demo.apk")
+
+    def test_coclub_extensionless_download_serves_intercepted_apk(self) -> None:
+        request = urllib.request.Request(
+            self.base + "/store/XCMemberCenter-2_1524765509.0",
+            headers={"Host": "gstore-fee.oss-cn-hangzhou.aliyuncs.com"},
+        )
+        with urllib.request.urlopen(request) as response:
+            self.assertEqual(response.read(), b"0123456789")
+
+        self.assertEqual(self.intercept_records[0]["servedApk"], "demo.apk")
 
     def test_range_parser(self) -> None:
         self.assertEqual(parse_range("bytes=-3", 10).start, 7)
         self.assertEqual(parse_range("bytes=4-", 10).end, 9)
 
     def test_static_proxy_omits_binary_body_from_logs(self) -> None:
-        request = urllib.request.Request(
-            self.base + "/catalog/icon.png",
-            headers={"Host": "gstore-static.xchanger.cn"},
+        hosts = (
+            "gstore-static.xchanger.cn",
+            "gstore-fee.oss-cn-hangzhou.aliyuncs.com",
         )
-        with urllib.request.urlopen(request) as response:
-            self.assertEqual(response.read(), b"static-image")
+        for host in hosts:
+            with self.subTest(host=host):
+                request = urllib.request.Request(
+                    self.base + "/catalog/icon.png",
+                    headers={"Host": host},
+                )
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.read(), b"static-image")
 
         record = self.proxy_records[0]
         self.assertEqual(record["responseBodyBytes"], len(b"static-image"))

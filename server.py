@@ -30,6 +30,12 @@ HOP_BY_HOP_HEADERS = {
     "upgrade",
 }
 MAX_PROXY_REQUEST_BODY = 16 * 1024 * 1024
+GSTORE_STATIC_HOSTS = {
+    "gstore-static.xchanger.cn",
+    "gstore-static.oss-cn-hangzhou.aliyuncs.com",
+}
+GSTORE_FEE_HOST = "gstore-fee.oss-cn-hangzhou.aliyuncs.com"
+EXACT_DOWNLOAD_PATHS = {"/store/XCMemberCenter-2_1524765509.0"}
 
 
 @dataclass(frozen=True)
@@ -347,6 +353,7 @@ def make_handler(
     store: Store,
     proxy: ReverseProxy | None = None,
     static_proxy: ReverseProxy | None = None,
+    fee_proxy: ReverseProxy | None = None,
     intercepted_apk: str | None = None,
     logger: Callable[[dict[str, Any]], None] = _default_proxy_logger,
 ) -> type[BaseHTTPRequestHandler]:
@@ -385,11 +392,9 @@ def make_handler(
             is_read = self.command in {"GET", "HEAD"}
 
             request_host = self.headers.get("Host", "").split(":", 1)[0].rstrip(".").lower()
-            if request_host in {
-                "gstore-static.xchanger.cn",
-                "gstore-static.oss-cn-hangzhou.aliyuncs.com",
-            }:
-                if is_read and route.lower().endswith(".apk") and intercepted_apk_path:
+            if request_host in GSTORE_STATIC_HOSTS or request_host == GSTORE_FEE_HOST:
+                is_download = route.lower().endswith(".apk") or route in EXACT_DOWNLOAD_PATHS
+                if is_read and is_download and intercepted_apk_path:
                     logger(
                         {
                             "event": "apk_intercept",
@@ -404,8 +409,9 @@ def make_handler(
                     )
                     self._serve_file(intercepted_apk_path, send_body)
                     return
-                if static_proxy is not None:
-                    static_proxy.forward(self, send_body=send_body)
+                selected_proxy = fee_proxy if request_host == GSTORE_FEE_HOST else static_proxy
+                if selected_proxy is not None:
+                    selected_proxy.forward(self, send_body=send_body)
                     return
                 self._json(
                     {"error": {"code": "404", "message": "Static route not found"}},
@@ -561,6 +567,10 @@ def main() -> None:
         help="Proxy non-APK gstore-static.xchanger.cn requests to this URL",
     )
     parser.add_argument(
+        "--fee-upstream-base-url",
+        help="Proxy non-download gstore-fee requests to this URL",
+    )
+    parser.add_argument(
         "--intercept-apk",
         help="Registered APK filename returned for every gstore-static .apk request",
     )
@@ -578,10 +588,16 @@ def main() -> None:
         if args.static_upstream_base_url
         else None
     )
+    fee_proxy = (
+        ReverseProxy(args.fee_upstream_base_url, log_bodies=False)
+        if args.fee_upstream_base_url
+        else None
+    )
     handler = make_handler(
         store,
         proxy,
         static_proxy,
+        fee_proxy,
         intercepted_apk=args.intercept_apk,
     )
     server = ThreadingHTTPServer((args.host, args.port), handler)
@@ -591,8 +607,10 @@ def main() -> None:
         print(f"Non-store routes proxy to {proxy.upstream_base_url}")
     if static_proxy:
         print(f"Non-APK static routes proxy to {static_proxy.upstream_base_url}")
+    if fee_proxy:
+        print(f"Non-download fee routes proxy to {fee_proxy.upstream_base_url}")
     if args.intercept_apk:
-        print(f"All gstore-static .apk requests serve {args.intercept_apk}")
+        print(f"Selected store download requests serve {args.intercept_apk}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
