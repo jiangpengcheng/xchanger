@@ -135,7 +135,30 @@ class ServerTest(unittest.TestCase):
             self.assertEqual(response.status, 206)
             self.assertEqual(response.read(), b"2345")
 
-    def test_all_gstore_apk_paths_serve_intercepted_apk(self) -> None:
+    def test_selected_fee_paths_serve_intercepted_apk(self) -> None:
+        paths = (
+            "/production/201909/CarMachineGeely_V1.0.1_181213_1568715670373.apk",
+            "/production/202005/cheyoubaoxian_20181219_1545811898063_1568196311113_1588745275201.apk",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                request = urllib.request.Request(
+                    self.base + path + "?download=1",
+                    headers={
+                        "Host": "gstore-fee.oss-cn-hangzhou.aliyuncs.com",
+                        "Range": "bytes=4-7",
+                    },
+                )
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.read(), b"4567")
+
+        self.assertEqual(len(self.intercept_records), 2)
+        record = self.intercept_records[0]
+        self.assertEqual(record["path"], paths[0] + "?download=1")
+        self.assertEqual(record["servedApk"], "demo.apk")
+
+    def test_other_apk_paths_are_proxied(self) -> None:
         hosts = (
             "gstore-static.xchanger.cn",
             "gstore-static.oss-cn-hangzhou.aliyuncs.com",
@@ -144,27 +167,22 @@ class ServerTest(unittest.TestCase):
         for host in hosts:
             with self.subTest(host=host):
                 request = urllib.request.Request(
-                    self.base + "/catalog/original-app.apk?download=1",
-                    headers={"Host": host, "Range": "bytes=4-7"},
+                    self.base + "/catalog/original-app.apk", headers={"Host": host}
                 )
                 with urllib.request.urlopen(request) as response:
-                    self.assertEqual(response.status, 206)
-                    self.assertEqual(response.read(), b"4567")
+                    self.assertEqual(response.read(), b"static-image")
 
-        self.assertEqual(len(self.intercept_records), 3)
-        record = self.intercept_records[0]
-        self.assertEqual(record["path"], "/catalog/original-app.apk?download=1")
-        self.assertEqual(record["servedApk"], "demo.apk")
+        self.assertEqual(self.intercept_records, [])
 
-    def test_coclub_extensionless_download_serves_intercepted_apk(self) -> None:
+    def test_coclub_extensionless_download_is_proxied(self) -> None:
         request = urllib.request.Request(
             self.base + "/store/XCMemberCenter-2_1524765509.0",
             headers={"Host": "gstore-fee.oss-cn-hangzhou.aliyuncs.com"},
         )
         with urllib.request.urlopen(request) as response:
-            self.assertEqual(response.read(), b"0123456789")
+            self.assertEqual(response.read(), b"static-image")
 
-        self.assertEqual(self.intercept_records[0]["servedApk"], "demo.apk")
+        self.assertEqual(self.intercept_records, [])
 
     def test_range_parser(self) -> None:
         self.assertEqual(parse_range("bytes=-3", 10).start, 7)

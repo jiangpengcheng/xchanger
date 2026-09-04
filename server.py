@@ -35,7 +35,10 @@ GSTORE_STATIC_HOSTS = {
     "gstore-static.oss-cn-hangzhou.aliyuncs.com",
 }
 GSTORE_FEE_HOST = "gstore-fee.oss-cn-hangzhou.aliyuncs.com"
-EXACT_DOWNLOAD_PATHS = {"/store/XCMemberCenter-2_1524765509.0"}
+INTERCEPT_DOWNLOAD_PATHS = {
+    "/production/201909/CarMachineGeely_V1.0.1_181213_1568715670373.apk",
+    "/production/202005/cheyoubaoxian_20181219_1545811898063_1568196311113_1588745275201.apk",
+}
 
 
 @dataclass(frozen=True)
@@ -393,7 +396,10 @@ def make_handler(
 
             request_host = self.headers.get("Host", "").split(":", 1)[0].rstrip(".").lower()
             if request_host in GSTORE_STATIC_HOSTS or request_host == GSTORE_FEE_HOST:
-                is_download = route.lower().endswith(".apk") or route in EXACT_DOWNLOAD_PATHS
+                is_download = (
+                    request_host == GSTORE_FEE_HOST
+                    and route in INTERCEPT_DOWNLOAD_PATHS
+                )
                 if is_read and is_download and intercepted_apk_path:
                     logger(
                         {
@@ -572,7 +578,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--intercept-apk",
-        help="Registered APK filename returned for every gstore-static .apk request",
+        help="Registered APK filename returned for selected test download paths",
     )
     parser.add_argument(
         "--root",

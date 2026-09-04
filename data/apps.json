@@ -35,6 +35,18 @@
       "developer": "亿咖通",
       "updateTime": "2026-09-03",
       "changes": ""
+    },
+    {
+      "productId": "900004",
+      "name": "行车记录仪（官方测试）",
+      "packageName": "com.hikvision.carmachinegeely",
+      "versionCode": 2018121315,
+      "versionName": "V1.0.2_181213",
+      "apk": "com.hikvision.carmachinegeely-2018121315.apk",
+      "description": "官方行车记录仪 APK 验签测试应用",
+      "developer": "杭州海康汽车软件有限公司",
+      "updateTime": "2026-09-04",
+      "changes": ""
     }
   ]
 }
